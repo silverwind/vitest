@@ -28,6 +28,7 @@ import type {
   CDPSession,
   TestProject,
 } from 'vitest/node'
+import { randomUUID } from 'node:crypto'
 import { defineBrowserProvider } from '@vitest/browser'
 import { createManualModuleSource } from '@vitest/mocker/node'
 import { resolve } from 'pathe'
@@ -382,6 +383,31 @@ export class PlaywrightBrowserProvider implements BrowserProvider {
   private createMocker(): BrowserModuleMocker {
     const idPredicates = new Map<string, (url: URL) => boolean>()
     const sessionIds = new Map<string, Set<string>>()
+    const probes = new Map<string, Promise<void>>()
+
+    const probeInterception = async (sessionId: string, page: Page): Promise<void> => {
+      const token = randomUUID()
+      const probeUrl = `/__vitest_interception_probe__/${token}`
+      const predicate = (url: URL) => url.pathname === probeUrl
+      sessionIds.set(sessionId, (sessionIds.get(sessionId) ?? new Set()).add(probeUrl))
+      idPredicates.set(predicateKey(sessionId, probeUrl), predicate)
+      await page.context().route(predicate, route => route.fulfill({
+        status: 204,
+        headers: { 'x-vitest-probe': token },
+      }))
+      const deadline = Date.now() + 5000
+      while (Date.now() < deadline) {
+        const seen = await page.evaluate(
+          url => fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(1000) }).then(r => r.headers.get('x-vitest-probe')),
+          probeUrl,
+        ).catch(() => null)
+        if (seen === token) {
+          return
+        }
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+      throw new Error(`Timed out waiting for ${this.browserName} request interception to activate, module mocks cannot be applied reliably.`)
+    }
 
     function createPredicate(url: string) {
       const moduleUrl = new URL(url, 'http://localhost')
@@ -423,6 +449,12 @@ export class PlaywrightBrowserProvider implements BrowserProvider {
     return {
       register: async (sessionId: string, module: MockedModule): Promise<void> => {
         const page = this.getPage(sessionId)
+        let probe = probes.get(sessionId)
+        if (!probe && this.browserName === 'chromium') {
+          probe = probeInterception(sessionId, page)
+          probe.catch(() => {})
+          probes.set(sessionId, probe)
+        }
         const { url: moduleUrl, predicate } = createPredicate(module.url)
         const key = predicateKey(sessionId, moduleUrl)
         const existingPredicate = idPredicates.get(key)
@@ -496,6 +528,7 @@ export class PlaywrightBrowserProvider implements BrowserProvider {
             const _module: never = module
           }
         })
+        await probe
       },
       delete: async (sessionId: string, id: string): Promise<void> => {
         const page = this.getPage(sessionId)
@@ -516,6 +549,7 @@ export class PlaywrightBrowserProvider implements BrowserProvider {
           }
           return null
         })
+        probes.delete(sessionId)
         await Promise.all(promises).finally(() => sessionIds.delete(sessionId))
       },
     }
