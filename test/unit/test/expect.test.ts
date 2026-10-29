@@ -1,9 +1,23 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec'
 import type { Tester } from '@vitest/expect'
 import { stripVTControlCharacters } from 'node:util'
+import { recordAsyncExpect } from '@vitest/expect'
 import { processError } from '@vitest/utils/error'
 import { Temporal } from 'temporal-polyfill'
 import { describe, expect, expectTypeOf, test, TestRunner, vi } from 'vitest'
+
+test('async expect awaited while its test finishes is not reported as not awaited', async () => {
+  const onFinished: (() => unknown)[] = []
+  const assertion = recordAsyncExpect(
+    { onFinished },
+    Promise.resolve(),
+    'expect(actual).resolves.toBe(1)',
+    new Error('stack'),
+  )
+  const finished = Promise.resolve().then(() => onFinished[0]())
+  await assertion
+  await finished
+})
 
 describe('expect.soft', () => {
   test('types', () => {

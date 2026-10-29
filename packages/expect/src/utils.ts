@@ -52,7 +52,8 @@ export function recordAsyncExpect(
 
     let resolved = false
     test.onFinished ??= []
-    test.onFinished.push(() => {
+    test.onFinished.push(async () => {
+      await Promise.resolve()
       if (!resolved) {
         const awaitError = new Error(
           `Promise returned by \`${assertion}\` was not awaited. This assertion is asynchronous and must be awaited; otherwise, it is not guaranteed to complete before the test finishes:\n\nawait ${assertion}\n`,
